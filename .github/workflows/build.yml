@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # ─────────────────────────────────────────────
+      # 1. 确定并校验版本号
+      # ─────────────────────────────────────────────
       - name: Determine & validate version
         id: ver
         run: |
@@ -30,14 +33,20 @@ jobs:
               | jq -r .tag_name | sed 's/^v//')
           fi
           if [ -z "$VER" ] || [ "$VER" = "null" ]; then
-            echo "❌ 无法确定版本号"; exit 1
+            echo "❌ 无法确定版本号（未提供输入且无法获取 latest release）"
+            exit 1
           fi
           if ! curl -sf -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/volcengine/OpenViking/git/ref/tags/v$VER" >/dev/null; then
-            echo "❌ Tag v$VER 不存在"; exit 1
+            echo "❌ Tag v$VER 不存在，请检查版本号"
+            exit 1
           fi
           echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "✅ 将构建版本 v$VER"
 
+      # ─────────────────────────────────────────────
+      # 2. checkout 官方源码（作为构建上下文）
+      # ─────────────────────────────────────────────
       - name: Checkout OpenViking source
         uses: actions/checkout@v4
         with:
@@ -46,15 +55,25 @@ jobs:
           fetch-depth: 1
           path: openviking
 
+      # ─────────────────────────────────────────────
+      # 3. checkout 自己的仓库（拿 Dockerfile.trimmed）
+      # ─────────────────────────────────────────────
       - name: Checkout my repo (for Dockerfile.trimmed)
         uses: actions/checkout@v4
         with:
           path: my-repo
           persist-credentials: false
 
+      # ─────────────────────────────────────────────
+      # 4. 把 Dockerfile.trimmed 拷进构建上下文
+      #    解决 buildx 无法读取 context 外 Dockerfile 的问题
+      # ─────────────────────────────────────────────
       - name: Copy Dockerfile into build context
         run: cp my-repo/Dockerfile.trimmed openviking/Dockerfile.trimmed
 
+      # ─────────────────────────────────────────────
+      # 5. 登录 GHCR
+      # ─────────────────────────────────────────────
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -62,9 +81,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ─────────────────────────────────────────────
+      # 6. 设置 Buildx
+      # ─────────────────────────────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # ─────────────────────────────────────────────
+      # 7. 构建并推送镜像
+      # ─────────────────────────────────────────────
       - name: Build and push trimmed image
         uses: docker/build-push-action@v6
         with:
@@ -80,3 +105,11 @@ jobs:
             OPENVIKING_VERSION=${{ steps.ver.outputs.version }}
             UV_LOCK_STRATEGY=locked
           platforms: linux/amd64
+
+      # ─────────────────────────────────────────────
+      # 8. 输出结果
+      # ─────────────────────────────────────────────
+      - name: Output image digest
+        run: |
+          echo "✅ Built: ghcr.io/${{ github.repository_owner }}/my-openviking-bot:${{ steps.ver.outputs.version }}"
+          echo "✅ Built: ghcr.io/${{ github.repository_owner }}/my-openviking-bot:latest"
