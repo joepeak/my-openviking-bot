@@ -71,6 +71,30 @@ jobs:
       - name: Copy Dockerfile into build context
         run: cp my-repo/Dockerfile.trimmed openviking/Dockerfile.trimmed
 
+      - name: Copy Dockerfile into build context
+        run: |
+          set -euo pipefail
+          echo "=== PWD ==="
+          pwd
+          echo "=== my-repo 根目录 ==="
+          ls -la my-repo/
+          echo "=== 源文件 ==="
+          ls -la my-repo/Dockerfile.trimmed
+          wc -c my-repo/Dockerfile.trimmed
+          echo "=== 执行拷贝 ==="
+          cp -v my-repo/Dockerfile.trimmed openviking/Dockerfile.trimmed
+          echo "=== 目标文件 ==="
+          ls -la openviking/Dockerfile.trimmed
+          wc -c openviking/Dockerfile.trimmed
+          echo "=== openviking 根目录前 30 项 ==="
+          ls -la openviking/ | head -30
+          echo "=== 是否存在 .dockerignore ==="
+          if [ -f openviking/.dockerignore ]; then
+            cat openviking/.dockerignore
+          else
+            echo "(无 .dockerignore)"
+          fi
+
       # ─────────────────────────────────────────────
       # 5. 登录 GHCR
       # ─────────────────────────────────────────────
@@ -99,8 +123,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/my-openviking-bot:${{ steps.ver.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/my-openviking-bot:latest
-          #cache-from: type=gha
-          #cache-to: type=gha,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             OPENVIKING_VERSION=${{ steps.ver.outputs.version }}
             UV_LOCK_STRATEGY=locked
