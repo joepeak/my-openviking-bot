@@ -65,34 +65,37 @@ jobs:
           persist-credentials: false
 
       # ─────────────────────────────────────────────
-      # 4. 把 Dockerfile.trimmed 拷进构建上下文
-      #    解决 buildx 无法读取 context 外 Dockerfile 的问题
+      # 4. 拷贝 Dockerfile.trimmed 进构建上下文 + 硬校验
       # ─────────────────────────────────────────────
       - name: Copy Dockerfile into build context
-        run: cp my-repo/Dockerfile.trimmed openviking/Dockerfile.trimmed
-
-      - name: Copy Dockerfile into build context
         run: |
-          set -euo pipefail
-          echo "=== PWD ==="
+          set -euxo pipefail
           pwd
-          echo "=== my-repo 根目录 ==="
+          echo "--- workspace root ---"
+          ls -la
+
+          echo "--- my-repo ---"
           ls -la my-repo/
-          echo "=== 源文件 ==="
-          ls -la my-repo/Dockerfile.trimmed
+
+          echo "--- source: 类型 + 大小 + 前 3 行 ---"
+          stat my-repo/Dockerfile.trimmed
           wc -c my-repo/Dockerfile.trimmed
-          echo "=== 执行拷贝 ==="
+          head -3 my-repo/Dockerfile.trimmed
+
+          echo "--- copy ---"
           cp -v my-repo/Dockerfile.trimmed openviking/Dockerfile.trimmed
-          echo "=== 目标文件 ==="
-          ls -la openviking/Dockerfile.trimmed
+
+          echo "--- dest: 类型 + 大小 + 前 3 行 ---"
+          stat openviking/Dockerfile.trimmed
           wc -c openviking/Dockerfile.trimmed
-          echo "=== openviking 根目录前 30 项 ==="
-          ls -la openviking/ | head -30
-          echo "=== 是否存在 .dockerignore ==="
-          if [ -f openviking/.dockerignore ]; then
-            cat openviking/.dockerignore
+          head -3 openviking/Dockerfile.trimmed
+
+          echo "--- 是否为符号链接？ ---"
+          if [ -L openviking/Dockerfile.trimmed ]; then
+            echo "❌ 是符号链接！指向："
+            readlink -f openviking/Dockerfile.trimmed
           else
-            echo "(无 .dockerignore)"
+            echo "✅ 不是符号链接"
           fi
 
       # ─────────────────────────────────────────────
@@ -106,25 +109,28 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ─────────────────────────────────────────────
-      # 6. 设置 Buildx
+      # 6. 设置 Buildx（用一次性 builder，避免复用旧状态）
       # ─────────────────────────────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          name: fresh-builder-${{ github.run_id }}
+          driver: docker-container
 
       # ─────────────────────────────────────────────
       # 7. 构建并推送镜像
+      #    注意 file 用 ./openviking/Dockerfile.trimmed
+      #    带 ./ 前缀可避开 buildx 路径二次拼接的坑
       # ─────────────────────────────────────────────
       - name: Build and push trimmed image
         uses: docker/build-push-action@v6
         with:
           context: openviking
-          file: Dockerfile.trimmed
+          file: ./openviking/Dockerfile.trimmed
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/my-openviking-bot:${{ steps.ver.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/my-openviking-bot:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             OPENVIKING_VERSION=${{ steps.ver.outputs.version }}
             UV_LOCK_STRATEGY=locked
