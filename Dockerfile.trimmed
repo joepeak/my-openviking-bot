@@ -79,6 +79,7 @@ COPY --from=py-builder /usr/local/bin/openviking-server /usr/local/bin/
 COPY --from=py-builder /usr/local/bin/openviking-console /usr/local/bin/
 COPY --from=py-builder /usr/local/bin/vikingbot /usr/local/bin/
 
+# 写 entrypoint.sh（heredoc 必须独占 RUN）
 RUN cat > /usr/local/bin/entrypoint.sh <<'EOF'
 #!/bin/bash
 set -euo pipefail
@@ -104,7 +105,9 @@ trap 'kill $SERVER_PID $CONSOLE_PID 2>/dev/null; wait $SERVER_PID; wait $CONSOLE
 
 wait $SERVER_PID
 EOF
-chmod +x /usr/local/bin/entrypoint.sh
+
+# chmod 必须单独一条 RUN
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENV HOME="/app" \
     PATH="/app/.venv/bin:$PATH" \
