@@ -133,7 +133,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/my-openviking-bot:latest
           build-args: |
             OPENVIKING_VERSION=${{ steps.ver.outputs.version }}
-            UV_LOCK_STRATEGY=locked
+            UV_LOCK_STRATEGY=auto
           platforms: linux/amd64
 
       # ─────────────────────────────────────────────
