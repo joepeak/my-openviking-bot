@@ -13,7 +13,6 @@ on:
 permissions:
   contents: read
   packages: write
-  id-token: write
 
 jobs:
   build:
@@ -23,18 +22,22 @@ jobs:
       - name: Determine & validate version
         id: ver
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VER="${{ github.event.inputs.version }}"
+          if [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
           else
-            VER=$(curl -s https://api.github.com/repos/volcengine/OpenViking/releases/latest | jq -r .tag_name | sed 's/^v//')
+            VER=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              https://api.github.com/repos/volcengine/OpenViking/releases/latest \
+              | jq -r .tag_name | sed 's/^v//')
           fi
-          if ! curl -sf "https://api.github.com/repos/volcengine/OpenViking/git/ref/tags/v$VER" >/dev/null; then
-            echo "❌ Tag v$VER 不存在，请检查版本号"
-            exit 1
+          if [ -z "$VER" ] || [ "$VER" = "null" ]; then
+            echo "❌ 无法确定版本号"; exit 1
+          fi
+          if ! curl -sf -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/volcengine/OpenViking/git/ref/tags/v$VER" >/dev/null; then
+            echo "❌ Tag v$VER 不存在"; exit 1
           fi
           echo "version=$VER" >> $GITHUB_OUTPUT
 
-      # 1️⃣ 先 checkout 官方源码（构建上下文）
       - name: Checkout OpenViking source
         uses: actions/checkout@v4
         with:
@@ -43,37 +46,14 @@ jobs:
           fetch-depth: 1
           path: openviking
 
-      # 2️⃣ 再 checkout 自己的仓库（拿 Dockerfile.trimmed），不写入 git 凭证
       - name: Checkout my repo (for Dockerfile.trimmed)
         uses: actions/checkout@v4
         with:
           path: my-repo
           persist-credentials: false
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:master
-
-      # 缓存放在两次 checkout 之后，确保 openviking 目录存在
-      - name: Cache cargo/uv/ccache
-        uses: actions/cache@v4
-        with:
-          path: |
-            /root/.cargo
-            /root/.cache/uv
-            /root/.ccache
-          key: ${{ runner.os }}-openviking-${{ steps.ver.outputs.version }}-${{ hashFiles('openviking/Cargo.lock', 'openviking/uv.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-openviking-${{ steps.ver.outputs.version }}-
+      - name: Copy Dockerfile into build context
+        run: cp my-repo/Dockerfile.trimmed openviking/Dockerfile.trimmed
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -84,15 +64,12 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:master
 
       - name: Build and push trimmed image
         uses: docker/build-push-action@v6
         with:
           context: openviking
-          file: ../my-repo/Dockerfile.trimmed
+          file: Dockerfile.trimmed
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/my-openviking-bot:${{ steps.ver.outputs.version }}
@@ -103,7 +80,3 @@ jobs:
             OPENVIKING_VERSION=${{ steps.ver.outputs.version }}
             UV_LOCK_STRATEGY=locked
           platforms: linux/amd64
-
-      - name: Output image digest
-        run: |
-          echo "Built: ghcr.io/${{ github.repository_owner }}/my-openviking-bot:${{ steps.ver.outputs.version }}"
