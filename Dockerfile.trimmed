@@ -1,0 +1,119 @@
+# syntax=docker/dockerfile:1.9
+# 仅保留 server + console + bot（去掉 gemini、去掉 Web Studio）
+# 用法：docker build --build-arg OPENVIKING_VERSION=0.3.22 -t my-openviking .
+# 升级：只需改 OPENVIKING_VERSION 重新 build，缓存命中 ~30s 完成
+
+# 1️⃣ Rust 工具链（缓存 cargo 目录，二次构建极快）
+FROM rust:1.91.1-trixie AS rust-toolchain
+
+# 2️⃣ Python + uv 构建环境（只装 bot extra，不装 gemini）
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim AS py-builder
+
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH="/app/.venv/bin:/usr/local/cargo/bin:${PATH}"
+
+ARG OPENVIKING_VERSION=
+ARG TARGETPLATFORM
+ARG UV_LOCK_STRATEGY=locked
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ccache \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/lib/ccache:${PATH}" \
+    CCACHE_DIR=/root/.ccache \
+    CARGO_TARGET_DIR=/cargo-target \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_DEV=1
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY pyproject.toml uv.lock setup.py README.md ./
+COPY scripts/build_support/ scripts/build_support/
+COPY bot/ bot/
+COPY crates/ crates/
+COPY openviking/ openviking/
+COPY openviking_cli/ openviking_cli/
+COPY src/ src/
+COPY third_party/ third_party/
+# ❌ 不 COPY web-studio
+
+RUN --mount=type=cache,target=/root/.cache/uv,id=uv-${TARGETPLATFORM} \
+    --mount=type=cache,target=/cargo-target,id=cargo-target-${TARGETPLATFORM} \
+    --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETPLATFORM} \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-${TARGETPLATFORM} \
+    --mount=type=cache,target=/root/.ccache,id=ccache-${TARGETPLATFORM} \
+    if [ -n "${OPENVIKING_VERSION:-}" ]; then \
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OPENVIKING="${OPENVIKING_VERSION}"; \
+    elif [ -f openviking/_version.py ]; then \
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OPENVIKING="$(python -c "import runpy; print(runpy.run_path('openviking/_version.py')['version'])")"; \
+    else \
+        echo "OPENVIKING_VERSION build arg is required" >&2; exit 2; \
+    fi; \
+    case "${UV_LOCK_STRATEGY}" in \
+        locked) uv sync --locked --no-editable --reinstall-package openviking --extra bot ;; \
+        auto) \
+            if ! uv lock --check; then uv lock; fi; \
+            uv sync --locked --no-editable --reinstall-package openviking --extra bot ;; \
+        *) echo "Unsupported UV_LOCK_STRATEGY" >&2; exit 2 ;; \
+    esac
+
+# 3️⃣ 最终运行时
+FROM python:3.13-slim-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/.openviking
+
+COPY --from=py-builder /app/.venv /app/.venv
+
+# 复制入口脚本（精简版，不依赖官方 deploy 目录）
+COPY --from=py-builder /usr/local/bin/openviking-server /usr/local/bin/
+COPY --from=py-builder /usr/local/bin/openviking-console /usr/local/bin/
+COPY --from=py-builder /usr/local/bin/vikingbot /usr/local/bin/
+
+RUN cat > /usr/local/bin/entrypoint.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# 启动 server (带 bot)
+openviking-server --with-bot &
+SERVER_PID=$!
+
+# 等待健康检查通过
+for i in {1..60}; do
+    if curl -fsS http://127.0.0.1:1933/health >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+# 启动 console
+python -m openviking.console.bootstrap --host 0.0.0.0 --port 8020 --openviking-url http://127.0.0.1:1933 &
+CONSOLE_PID=$!
+
+# 信号转发
+trap 'kill $SERVER_PID $CONSOLE_PID 2>/dev/null; wait $SERVER_PID; wait $CONSOLE_PID' TERM INT
+
+wait $SERVER_PID
+EOF
+chmod +x /usr/local/bin/entrypoint.sh
+
+ENV HOME="/app" \
+    PATH="/app/.venv/bin:$PATH" \
+    OPENVIKING_CONFIG_FILE="/app/.openviking/ov.conf" \
+    OPENVIKING_CLI_CONFIG_FILE="/app/.openviking/ovcli.conf"
+
+EXPOSE 1933 8020
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:1933/health || exit 1
+
+ENTRYPOINT ["entrypoint.sh"]
