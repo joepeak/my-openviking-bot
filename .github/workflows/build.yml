@@ -20,23 +20,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Determine version
+      - name: Determine & validate version
         id: ver
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            VER="${{ github.event.inputs.version }}"
           else
-            LATEST=$(curl -s https://api.github.com/repos/volcengine/OpenViking/releases/latest \
-              | jq -r .tag_name | sed 's/^v//')
-            echo "version=$LATEST" >> $GITHUB_OUTPUT
+            VER=$(curl -s https://api.github.com/repos/volcengine/OpenViking/releases/latest | jq -r .tag_name | sed 's/^v//')
           fi
+          if ! curl -sf "https://api.github.com/repos/volcengine/OpenViking/git/ref/tags/v$VER" >/dev/null; then
+            echo "❌ Tag v$VER 不存在，请检查版本号"
+            exit 1
+          fi
+          echo "version=$VER" >> $GITHUB_OUTPUT
 
+      # 1️⃣ 先 checkout 你自己的仓库（拿 Dockerfile.trimmed）
+      - name: Checkout my repo (for Dockerfile.trimmed)
+        uses: actions/checkout@v4
+        with:
+          path: my-repo
+
+      # 2️⃣ 再 checkout 官方源码（拿源码）
       - name: Checkout OpenViking source
         uses: actions/checkout@v4
         with:
           repository: volcengine/OpenViking
           ref: v${{ steps.ver.outputs.version }}
           fetch-depth: 1
+          path: openviking
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -58,15 +69,15 @@ jobs:
             /root/.cargo
             /root/.cache/uv
             /root/.ccache
-          key: ${{ runner.os }}-openviking-${{ steps.ver.outputs.version }}-${{ hashFiles('Cargo.lock', 'uv.lock') }}
+          key: ${{ runner.os }}-openviking-${{ steps.ver.outputs.version }}-${{ hashFiles('openviking/Cargo.lock', 'openviking/uv.lock') }}
           restore-keys: |
             ${{ runner.os }}-openviking-${{ steps.ver.outputs.version }}-
 
       - name: Build and push trimmed image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile.trimmed
+          context: openviking                    # 构建上下文是官方源码目录
+          file: ../my-repo/Dockerfile.trimmed    # Dockerfile 在你自己的仓库里
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/my-openviking-bot:${{ steps.ver.outputs.version }}
