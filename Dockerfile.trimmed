@@ -34,7 +34,7 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
 COPY pyproject.toml uv.lock setup.py README.md ./
-COPY scripts/build_support/ scripts/build_support/
+COPY build_support/ build_support/
 COPY bot/ bot/
 COPY crates/ crates/
 COPY openviking/ openviking/
@@ -73,11 +73,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app/.openviking
 
 COPY --from=py-builder /app/.venv /app/.venv
-
-# 复制入口脚本（精简版，不依赖官方 deploy 目录）
-COPY --from=py-builder /usr/local/bin/openviking-server /usr/local/bin/
-COPY --from=py-builder /usr/local/bin/openviking-console /usr/local/bin/
-COPY --from=py-builder /usr/local/bin/vikingbot /usr/local/bin/
 
 # 写 entrypoint.sh（heredoc 必须独占 RUN）
 RUN cat > /usr/local/bin/entrypoint.sh <<'EOF'
